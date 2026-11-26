@@ -20,6 +20,7 @@ GLOSSARY_ID = "glossary"
 TOP_K = 8
 MIN_SCORE_RATIO = 0.4
 MAX_CONTEXT_CHARS = 18_000
+MAX_CLARIFICATIONS = 3
 
 # These short forms are also everyday Russian words in another case.
 CASE_SENSITIVE_ABBREVIATIONS = frozenset({"ПО", "ТП", "КП", "ЗП", "КИ", "СБ"})
@@ -173,6 +174,7 @@ _SUFFIXES = (
 _TOKEN = re.compile(r"[A-Za-zА-ЯЁа-яё0-9]+(?:-[A-Za-zА-ЯЁа-яё0-9]+)*")
 _ALIAS_PREFIXES = ("то же:", "должность:", "документ:", "вместе с")
 _NUMBERED_HEADING = re.compile(r"^(\d+)\.\s+")
+_CLAUSE_LINE = re.compile(r"^(?:\*\*)?(\d+(?:\.\d+)+)\.(?:\*\*)?(?:\s+(.*))?$")
 
 
 @dataclass(frozen=True)
@@ -191,11 +193,30 @@ class Section:
 
 
 @dataclass(frozen=True)
+class Clause:
+    document: str
+    heading: str
+    body: str
+    document_id: str
+    section_id: str
+    anchor: str
+    clause_id: str
+
+    @property
+    def path(self) -> str:
+        return f"/kb/{self.document_id}#{self.anchor}"
+
+
+@dataclass(frozen=True)
 class Document:
     id: str
     title: str
     source_name: str
     sections: tuple[Section, ...]
+
+    @property
+    def path(self) -> str:
+        return f"/kb/{self.id}"
 
 
 @dataclass(frozen=True)
@@ -205,7 +226,8 @@ class Corpus:
     documents: tuple[Document, ...]
     document_titles: tuple[str, ...]
     sections: tuple[Section, ...]
-    section_terms: tuple[tuple[str, ...], ...]
+    clauses: tuple[Clause, ...]
+    clause_terms: tuple[tuple[str, ...], ...]
     alias_groups: tuple[tuple[str, ...], ...]
 
 
@@ -233,9 +255,10 @@ def load_knowledge(directory: Path | None = None) -> Corpus:
     with _lock:
         _corpus = corpus
     logger.info(
-        "loaded knowledge: %s documents, %s sections",
+        "loaded knowledge: %s documents, %s sections, %s clauses",
         len(corpus.documents),
         len(corpus.sections),
+        len(corpus.clauses),
     )
     return corpus
 
@@ -257,67 +280,123 @@ def latest_question(messages: list[dict[str, str]]) -> str:
     return questions[-1]
 
 
-def render_context(question: str) -> str:
-    corpus = get_corpus()
-    selected = select_sections(question, corpus)
-    logger.info(
-        "knowledge context for %r: %s",
-        question[:180],
-        "; ".join(f"{item.source_name} / {item.heading}" for item in selected) or "none",
+def search_clauses(
+    question: str,
+    corpus: Corpus | None = None,
+    document_ids: frozenset[str] | None = None,
+) -> list[tuple[Clause, float]]:
+    corpus = get_corpus() if corpus is None else corpus
+    query_terms = _query_terms(question, corpus.alias_groups)
+    if not query_terms or not corpus.clauses:
+        return []
+    clauses = corpus.clauses
+    terms = corpus.clause_terms
+    if document_ids is not None:
+        filtered = [
+            (clause, term)
+            for clause, term in zip(clauses, terms, strict=True)
+            if clause.document_id in document_ids
+        ]
+        if not filtered:
+            return []
+        clauses = tuple(clause for clause, _term in filtered)
+        terms = tuple(term for _clause, term in filtered)
+    scores = _bm25(query_terms, terms)
+    ranked = sorted(
+        zip(scores, clauses, terms, strict=True),
+        key=lambda item: item[0],
+        reverse=True,
     )
-    lines = [
-        "Глоссарий. Сокращение и полные формы ниже означают одно и то же.",
-        corpus.glossary.strip(),
-        "",
-        "Термин глоссария цитируй ссылкой вида [РП](/kb/glossary#s-РП), подставив сокращение.",
-        "",
-        "Регламенты:",
-    ]
-    lines.extend(f"- {title}" for title in corpus.document_titles)
-    lines.append("")
-    if not selected:
-        lines.append(
-            "Фрагменты по этому вопросу не найдены. "
-            "Задай уточняющий вопрос или скажи, что в приведённых материалах нет ответа."
-        )
-        return "\n".join(lines)
-    lines.append("Фрагменты, отобранные по текущему вопросу:")
-    for section in selected:
-        link = f"[{section.heading}]({section.path})"
-        lines.append(
-            f"\n# {section.document}\n## {section.heading}\n{link}\n{section.body.strip()}"
-        )
-    return "\n".join(lines)
+    best_score, _best_clause, best_terms = ranked[0]
+    if best_score <= 0 or not _overlap_ok(query_terms, best_terms):
+        return []
+    selected: list[tuple[Clause, float]] = []
+    size = 0
+    for score, clause, _terms in ranked:
+        if score < best_score * MIN_SCORE_RATIO:
+            break
+        if selected and size + len(clause.body) > MAX_CONTEXT_CHARS:
+            break
+        selected.append((clause, score))
+        size += len(clause.body)
+        if len(selected) >= TOP_K:
+            break
+    return _with_neighbors(selected, corpus)
 
 
 def search_sections(question: str, corpus: Corpus | None = None) -> list[tuple[Section, float]]:
     corpus = get_corpus() if corpus is None else corpus
-    query_terms = _query_terms(question, corpus.alias_groups)
-    if not query_terms or not corpus.sections:
-        return []
-    scores = _bm25(query_terms, corpus.section_terms)
-    ranked = sorted(
-        zip(scores, corpus.sections, strict=True), key=lambda item: item[0], reverse=True
-    )
-    best = ranked[0][0]
-    if best <= 0:
-        return []
-    selected: list[tuple[Section, float]] = []
-    size = 0
-    for score, section in ranked:
-        if score < best * MIN_SCORE_RATIO:
-            break
-        if selected and size + len(section.body) > MAX_CONTEXT_CHARS:
-            break
-        selected.append((section, score))
-        size += len(section.body)
-        if len(selected) >= TOP_K:
-            break
-    return selected
+    found: list[tuple[Section, float]] = []
+    seen: set[tuple[str, str]] = set()
+    for clause, score in search_clauses(question, corpus):
+        key = (clause.document_id, clause.section_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        section = find_section(clause.document_id, clause.section_id, corpus)
+        if section is None:
+            continue
+        found.append((section, score))
+    return found
 
 
 def select_sections(question: str, corpus: Corpus | None = None) -> list[Section]:
     return [section for section, _score in search_sections(question, corpus)]
+
+
+def _with_neighbors(
+    selected: list[tuple[Clause, float]], corpus: Corpus
+) -> list[tuple[Clause, float]]:
+    """Keep the clause before and after a top hit in the same section.
+
+    A deadline and the exception next to it often answer one question, and the
+    exception's own words may not have ranked.
+    """
+    if not selected:
+        return selected
+    grouped: dict[tuple[str, str], list[Clause]] = {}
+    for clause in corpus.clauses:
+        grouped.setdefault((clause.document_id, clause.section_id), []).append(clause)
+    seen = {
+        (clause.document_id, clause.section_id, clause.clause_id) for clause, _score in selected
+    }
+    adjacent: list[tuple[Clause, float]] = []
+    for clause, score in selected[:2]:
+        group = grouped.get((clause.document_id, clause.section_id), [])
+        indexes = [index for index, item in enumerate(group) if item.clause_id == clause.clause_id]
+        if not indexes:
+            continue
+        index = indexes[0]
+        for neighbor_index in (index - 1, index + 1):
+            if neighbor_index < 0 or neighbor_index >= len(group):
+                continue
+            neighbor = group[neighbor_index]
+            key = (neighbor.document_id, neighbor.section_id, neighbor.clause_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            adjacent.append((neighbor, score * MIN_SCORE_RATIO))
+    merged = [selected[0], *adjacent, *selected[1:]]
+    kept: list[tuple[Clause, float]] = []
+    size = 0
+    for clause, score in merged:
+        if kept and size + len(clause.body) > MAX_CONTEXT_CHARS:
+            continue
+        kept.append((clause, score))
+        size += len(clause.body)
+        if len(kept) >= TOP_K:
+            break
+    return kept
+
+
+def _overlap_ok(query_terms: list[str], doc_terms: tuple[str, ...]) -> bool:
+    unique = set(query_terms)
+    if not unique:
+        return False
+    hits = len(unique & set(doc_terms))
+    if len(unique) <= 2:
+        return hits >= 1 and hits / len(unique) >= 0.5
+    return hits >= 2 and hits / len(unique) >= 0.2
 
 
 def find_document(document_id: str, corpus: Corpus | None = None) -> Document | None:
@@ -396,13 +475,15 @@ def _read_corpus(directory: Path) -> Corpus:
         sections.extend(document.sections)
     if not sections:
         raise RuntimeError(f"no regulation markdown in {directory}")
+    clauses = tuple(clause for section in sections for clause in _clauses_for(section))
     return Corpus(
         glossary=glossary,
         glossary_document=glossary_document,
         documents=tuple(documents),
         document_titles=tuple(document.title for document in documents),
         sections=tuple(sections),
-        section_terms=tuple(_section_terms(section) for section in sections),
+        clauses=clauses,
+        clause_terms=tuple(_clause_terms(clause) for clause in clauses),
         alias_groups=_parse_alias_groups(glossary),
     )
 
@@ -614,11 +695,60 @@ def _phrase_in(phrase: str, question: str) -> bool:
     return re.search(rf"(?<!\w){body}(?!\w)", question, flags) is not None
 
 
-def _section_terms(section: Section) -> tuple[str, ...]:
-    heading = [_index_term(token) for token in _TOKEN.findall(section.heading)]
-    document = [_index_term(token) for token in _TOKEN.findall(section.document)]
-    body = [_index_term(token) for token in _TOKEN.findall(section.body)]
-    return tuple(term for term in (*heading, *heading, *heading, *document, *body) if term)
+def _clauses_for(section: Section) -> list[Clause]:
+    clauses: list[Clause] = []
+    current_id: str | None = None
+    lines: list[str] = []
+    preamble: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_id, lines
+        if current_id is None:
+            return
+        clauses.append(_make_clause(section, current_id, "\n".join(lines).strip()))
+        current_id = None
+        lines = []
+
+    for line in section.body.splitlines():
+        match = _CLAUSE_LINE.match(line.strip())
+        if match:
+            flush()
+            current_id = match.group(1)
+            lines = [line.strip()]
+            continue
+        if current_id is None:
+            preamble.append(line)
+        else:
+            lines.append(line)
+    flush()
+    preamble_text = "\n".join(preamble).strip()
+    if preamble_text:
+        clauses.insert(0, _make_clause(section, section.section_id, preamble_text))
+    if not clauses:
+        clauses.append(_make_clause(section, section.section_id, section.body.strip()))
+    return clauses
+
+
+def _make_clause(section: Section, clause_id: str, body: str) -> Clause:
+    return Clause(
+        document=section.document,
+        heading=section.heading,
+        body=body,
+        document_id=section.document_id,
+        section_id=section.section_id,
+        anchor=section.anchor,
+        clause_id=clause_id,
+    )
+
+
+def _clause_terms(clause: Clause) -> tuple[str, ...]:
+    heading = [_index_term(token) for token in _TOKEN.findall(clause.heading)]
+    number = [_index_term(token) for token in _TOKEN.findall(clause.clause_id)]
+    document = [_index_term(token) for token in _TOKEN.findall(clause.document)]
+    body = [_index_term(token) for token in _TOKEN.findall(clause.body)]
+    return tuple(
+        term for term in (*heading, *heading, *heading, *number, *number, *document, *body) if term
+    )
 
 
 def _index_term(token: str) -> str | None:

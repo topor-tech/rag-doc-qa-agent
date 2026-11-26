@@ -25,7 +25,9 @@ mcp = MCPServer(
         "Корпоративные регламенты и глоссарий. "
         "Сначала search_sections, затем get_section для каждого раздела, на который ссылаешься. "
         "В ответе пользователю вставляй markdown-ссылку path без изменений. "
-        "Текст ссылки — заголовок раздела. "
+        "Ссылка на документ целиком берётся из path документа, например [Пресейловая деятельность Дирекции ИБ](/kb/presales-activity-ib). "
+        "Текст такой ссылки — название документа. "
+        "Ссылка на раздел берётся из path раздела, текст ссылки — заголовок раздела. "
         "get_document читай только когда нужен документ целиком."
     ),
 )
@@ -33,11 +35,16 @@ mcp = MCPServer(
 
 @mcp.tool()
 def list_documents() -> list[dict[str, str | int]]:
-    """Список регламентов и глоссария: id, название и число разделов, без текста."""
+    """Список регламентов и глоссария: id, название, ссылка path и число разделов, без текста."""
     corpus = get_corpus()
     documents = (*corpus.documents, corpus.glossary_document)
     return [
-        {"id": document.id, "title": document.title, "section_count": len(document.sections)}
+        {
+            "id": document.id,
+            "title": document.title,
+            "path": document.path,
+            "section_count": len(document.sections),
+        }
         for document in documents
     ]
 
@@ -51,6 +58,7 @@ def get_outline(document_id: str) -> dict[str, object]:
     return {
         "document_id": document.id,
         "title": document.title,
+        "path": document.path,
         "sections": [
             {
                 "section_id": section.section_id,
@@ -72,6 +80,7 @@ def get_section(document_id: str, section_id: str) -> dict[str, str]:
     return {
         "document_id": section.document_id,
         "document_title": section.document,
+        "document_path": f"/kb/{section.document_id}",
         "section_id": section.section_id,
         "heading": section.heading,
         "anchor": section.anchor,
@@ -89,7 +98,7 @@ def get_document(document_id: str) -> dict[str, str]:
     return {
         "document_id": document.id,
         "title": document.title,
-        "path": f"/kb/{document.id}",
+        "path": document.path,
         "markdown": document_markdown(document),
     }
 
@@ -101,6 +110,7 @@ def search_sections(query: str) -> list[dict[str, str | float]]:
         {
             "document_id": section.document_id,
             "document_title": section.document,
+            "document_path": f"/kb/{section.document_id}",
             "section_id": section.section_id,
             "heading": section.heading,
             "score": score,
@@ -121,6 +131,7 @@ def get_glossary(term: str = "") -> dict[str, str]:
         return {
             "document_id": section.document_id,
             "document_title": section.document,
+            "document_path": f"/kb/{section.document_id}",
             "section_id": section.section_id,
             "heading": section.heading,
             "path": section.path,
@@ -130,7 +141,7 @@ def get_glossary(term: str = "") -> dict[str, str]:
     return {
         "document_id": corpus.glossary_document.id,
         "document_title": corpus.glossary_document.title,
-        "path": f"/kb/{corpus.glossary_document.id}",
+        "path": corpus.glossary_document.path,
         "text": corpus.glossary.strip(),
     }
 

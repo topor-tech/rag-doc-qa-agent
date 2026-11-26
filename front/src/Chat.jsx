@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 const KB_LINK = /\[([^\]]+)\]\((\/kb\/[^)\s]+)\)/g
+const DOCUMENT_LINE = /^\[([^\]]+)\]\((\/kb\/[^)#\s]+)\)\s*$/
 
 function openKb(event, href, onOpenPath) {
   if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return
@@ -8,7 +9,7 @@ function openKb(event, href, onOpenPath) {
   onOpenPath(href)
 }
 
-function MessageBody({ content, onOpenPath }) {
+function lineNodes(content, onOpenPath) {
   const nodes = []
   let last = 0
   let key = 0
@@ -16,8 +17,14 @@ function MessageBody({ content, onOpenPath }) {
     const start = match.index ?? 0
     if (start > last) nodes.push(content.slice(last, start))
     const href = match[2]
+    const documentLink = !href.includes('#')
     nodes.push(
-      <a key={key} href={href} onClick={(event) => openKb(event, href, onOpenPath)}>
+      <a
+        key={key}
+        href={href}
+        className={documentLink ? 'doc-cite' : undefined}
+        onClick={(event) => openKb(event, href, onOpenPath)}
+      >
         {match[1]}
       </a>,
     )
@@ -25,7 +32,29 @@ function MessageBody({ content, onOpenPath }) {
     last = start + match[0].length
   }
   if (last < content.length) nodes.push(content.slice(last))
-  return <p>{nodes}</p>
+  return nodes
+}
+
+function MessageBody({ content, onOpenPath }) {
+  const lines = content.split('\n')
+  return (
+    <div className="message-body">
+      {lines.map((line, index) => {
+        const document = line.trim().match(DOCUMENT_LINE)
+        if (document) {
+          const href = document[2]
+          return (
+            <p key={index}>
+              <a className="doc-cite" href={href} onClick={(event) => openKb(event, href, onOpenPath)}>
+                {document[1]}
+              </a>
+            </p>
+          )
+        }
+        return <p key={index}>{lineNodes(line, onOpenPath)}</p>
+      })}
+    </div>
+  )
 }
 
 function Chat({ onOpenPath }) {
