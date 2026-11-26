@@ -37,3 +37,10 @@ repos:
         args: ["run", "lint", "--prefix", "front"]
         pass_filenames: false
         files: ^front/.*\.(cjs|mjs|js|jsx|ts|tsx)$
+      - id: mypy
+        name: mypy (chat)
+        entry: uv
+        language: system
+        args: ["run", "--directory", "back/chat", "mypy"]
+        pass_filenames: false
+        files: ^back/chat/.*\.py$

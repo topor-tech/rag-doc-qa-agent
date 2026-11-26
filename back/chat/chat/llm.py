@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 from chat.env import load_env
 from chat.knowledge import latest_question, render_context
@@ -38,6 +39,22 @@ def get_client() -> OpenAI:
     return _client
 
 
+def _chat_messages(messages: list[dict[str, str]]) -> list[ChatCompletionMessageParam]:
+    converted: list[ChatCompletionMessageParam] = []
+    for item in messages:
+        role = item["role"]
+        content = item["content"]
+        if role == "user":
+            converted.append({"role": "user", "content": content})
+        elif role == "assistant":
+            converted.append({"role": "assistant", "content": content})
+        elif role == "system":
+            converted.append({"role": "system", "content": content})
+        else:
+            raise ValueError(f"unsupported message role: {role}")
+    return converted
+
+
 def complete(messages: list[dict[str, str]]) -> str:
     system = f"{SYSTEM_PROMPT}\n\n{render_context(latest_question(messages))}"
     response = get_client().chat.completions.create(
@@ -46,6 +63,6 @@ def complete(messages: list[dict[str, str]]) -> str:
         temperature=0.5,
         presence_penalty=0,
         top_p=0.95,
-        messages=[{"role": "system", "content": system}, *messages],
+        messages=[{"role": "system", "content": system}, *_chat_messages(messages)],
     )
     return response.choices[0].message.content or ""
