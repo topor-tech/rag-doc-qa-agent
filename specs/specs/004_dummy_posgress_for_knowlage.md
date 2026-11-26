@@ -31,11 +31,11 @@ The public ids do not change. A citation is still `/kb/{document_id}#s-{section_
 
 ## Why a separate service
 
-Search and the reader use the same rows. Putting them in the knowledge service means chat does not load the folder, and the model tools cannot drift from the HTTP catalog. One database is enough. The service is stateless apart from its connection pool: the index lives in Postgres, not in a second copy of `Corpus`.
+Search and the reader use the same rows. Putting them in the knowledge service means chat does not load the folder, and the model tools cannot drift from the HTTP catalog. One database is enough. The service is stateless apart from its connection pool. Each search reads the clause rows and ranks them in the process. It does not keep a second copy of `Corpus`.
 
-In-process BM25 stays out of this slice. Ranking becomes `ts_rank_cd` over a `tsvector` built with the `russian` configuration. Scores will not match the current stemmer. The caps stay: at most 8 clauses, a hit must reach 40% of the best score, bodies stay within 18 000 characters, and the clause before and after a top hit in the same section is still included. A dialogue that already knows the directorate passes `document_id`s into the query.
+Ranking is the same BM25 the chat used (`k1 = 1.5`, `b = 0.75`, the short Russian stemmer). The heading is counted three times, the clause number twice, the document title once, and the body once. A hit is kept only when the best clause shares enough query terms, then the caps apply: at most 8 clauses, a hit must reach 40% of the best score, bodies stay within 18 000 characters, and the clause before and after a top hit in the same section is still included. A dialogue that already knows the directorate passes `document_id`s into the query, and those rows are the whole corpus for that score. `clauses.search_vector` is still written on load and is not read by search.
 
-Glossary expansion stays in the service, before the tsquery is built. Alias lines are rows, not a scan of the glossary string on every question.
+Glossary expansion stays in the service, before the query terms are stemmed. Alias lines are rows, not a scan of the glossary string on every question.
 
 ## Schema `knowledge`
 
@@ -119,7 +119,7 @@ Chat does not read `KNOWLEDGE_DIR`. The knowledge service does.
 
 ## Search
 
-`search_clauses` ORs the words in the expanded question (`plainto_tsquery` per word, combined with `||`) and orders hits with `ts_rank_cd`. `websearch_to_tsquery` would AND the words, so a full question would miss a clause that only shares the terms that matter. The service then applies the 40% floor, the character budget, and the neighbor rows, and returns at most 8 clauses. A dialogue that already knows the directorate passes `document_id`s into the query. `search_sections` groups those clauses by `(document_id, section_id)` and attaches the section heading, the best score, a short snippet, and `path`.
+`search_clauses` stems the expanded question and ranks every clause in the filter with BM25, then applies the overlap floor, the 40% floor, the character budget, and the neighbor rows, and returns at most 8 clauses. `search_sections` groups those clauses by `(document_id, section_id)` and attaches the section heading, the best score, a short snippet, and `path`.
 
 Outline, one section, one document, and one glossary term are primary-key reads. They do not use the index.
 
@@ -156,4 +156,4 @@ The preselected-context path in `llm.py` uses the same search call as the MCP to
 - Expert answers. When they arrive they get their own table, with a link to the question and the `document_id`s they apply to. They are not rows in `clauses`. A regulation and a confirmed clarification must stay distinguishable.
 - Embeddings. A later slice can add a vector column on `clauses` and a second rank step. It does not need a new database.
 - Uploads, Confluence, and accounts. The folder remains the source.
-- Copying the hand-rolled stemmer into SQL. Russian full text replaces it.
+- Using `clauses.search_vector` to rank. The column stays for a later experiment. Search uses BM25 in the service.

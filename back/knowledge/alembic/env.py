@@ -13,7 +13,9 @@ from knowledge.models import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # The app configures Uvicorn before this migration runs. The default
+    # fileConfig disables those loggers, so request lines never appear.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 config.set_main_option("sqlalchemy.url", database_url())
 
 target_metadata = Base.metadata
