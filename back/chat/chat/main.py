@@ -6,6 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAIError
 from pydantic import BaseModel, Field, field_validator
 
+from chat.kb_http import router as kb_router
+from chat.kb_mcp import http_app as mcp_http
+from chat.knowledge import load_knowledge
 from chat.llm import complete, get_client
 from chat.sessions import Session, SessionStore
 
@@ -15,11 +18,15 @@ store = SessionStore()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    load_knowledge()
     get_client()
-    yield
+    async with mcp_http.router.lifespan_context(mcp_http):
+        yield
 
 
 app = FastAPI(title="Chat", lifespan=lifespan)
+app.include_router(kb_router)
+app.router.routes.extend(mcp_http.routes)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
