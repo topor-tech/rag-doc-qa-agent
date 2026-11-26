@@ -4,9 +4,47 @@ version = "0.1.0"
 description = "Chat backend for the document Q&A agent"
 requires-python = ">=3.14"
 dependencies = [
+    "fastapi>=0.165.0",
     "openai>=3.60.0",
+    "uvicorn>=0.32",
 ]
 
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["."]
+extend-exclude = [".venv", "secrets"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "N",    # pep8 naming
+    "C4",   # comprehensions
+    "PIE",  # misc lint
+    "RET",  # return statements
+    "ASYNC",
+    "A",    # builtin shadowing
+    "ARG",  # unused arguments
+    "PTH",  # pathlib
+]
+ignore = [
+    "E501", # line length is enforced by the formatter
+    # Russian copy uses Cyrillic letters that Ruff confuses with Latin.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["chat"]
