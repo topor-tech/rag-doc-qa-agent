@@ -8,8 +8,7 @@ from openai import OpenAIError
 from pydantic import BaseModel, Field, field_validator
 
 from chat.kb_http import router as kb_router
-from chat.kb_mcp import http_app as mcp_http
-from chat.knowledge import load_knowledge
+from chat.knowledge import KnowledgeUnavailableError
 from chat.llm import complete, get_client
 from chat.sessions import Session, SessionStore
 
@@ -19,15 +18,12 @@ store = SessionStore()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    load_knowledge()
     get_client()
-    async with mcp_http.router.lifespan_context(mcp_http):
-        yield
+    yield
 
 
 app = FastAPI(title="Chat", lifespan=lifespan)
 app.include_router(kb_router)
-app.router.routes.extend(mcp_http.routes)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -95,6 +91,9 @@ def post_message(session_id: str, body: MessageIn) -> SessionOut:
     history = [{"role": item.role, "content": item.content} for item in session.messages]
     try:
         reply = complete(history)
+    except KnowledgeUnavailableError as exc:
+        logger.exception("knowledge service request failed")
+        raise HTTPException(status_code=502, detail="База знаний недоступна") from exc
     except OpenAIError as exc:
         logger.exception("LLM request failed")
         raise HTTPException(status_code=502, detail="Не удалось получить ответ модели") from exc

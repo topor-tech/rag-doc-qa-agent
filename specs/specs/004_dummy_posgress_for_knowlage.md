@@ -18,7 +18,7 @@ flowchart TD
     chat --> ui[Vite app, still via /api]
 ```
 
-Chat remains the only process that calls the model. It no longer imports the corpus. The reader routes and the MCP tools keep the names and payloads in `kb_http.py` and `kb_mcp.py`. Chat proxies `/documents` and `/glossary` so the front does not gain a second origin. Cursor and the chat turn both call the knowledge service at `/mcp`.
+Chat remains the only process that calls the model. It no longer imports the corpus. The reader routes keep the same paths: chat proxies `/documents` and `/glossary`, so the front does not gain a second origin. The chat turn calls `POST /search/clauses` and `GET /prompt-context` on the knowledge service. Cursor calls the same search function through MCP at `/mcp`.
 
 The public ids do not change. A citation is still `/kb/{document_id}#s-{section_id}`.
 
@@ -119,20 +119,7 @@ Chat does not read `KNOWLEDGE_DIR`. The knowledge service does.
 
 ## Search
 
-`search_clauses` in the service:
-
-```sql
-select document_id, section_id, clause_id,
-       ts_rank_cd(search_vector, q) as score
-from knowledge.clauses,
-     websearch_to_tsquery('russian', :query) q
-where search_vector @@ q
-  and (:document_ids::text[] is null or document_id = any(:document_ids))
-order by score desc
-limit 30;
-```
-
-`:query` is the user question after alias expansion. The service then applies the 40% floor, the character budget, and the neighbor rows, and returns at most 8 clauses. `search_sections` groups those clauses by `(document_id, section_id)` and attaches the section heading, the best score, a short snippet, and `path`.
+`search_clauses` ORs the words in the expanded question (`plainto_tsquery` per word, combined with `||`) and orders hits with `ts_rank_cd`. `websearch_to_tsquery` would AND the words, so a full question would miss a clause that only shares the terms that matter. The service then applies the 40% floor, the character budget, and the neighbor rows, and returns at most 8 clauses. A dialogue that already knows the directorate passes `document_id`s into the query. `search_sections` groups those clauses by `(document_id, section_id)` and attaches the section heading, the best score, a short snippet, and `path`.
 
 Outline, one section, one document, and one glossary term are primary-key reads. They do not use the index.
 
@@ -154,8 +141,8 @@ The preselected-context path in `llm.py` uses the same search call as the MCP to
 
 | Piece | Place |
 | --- | --- |
-| Schema | applied by the knowledge service on startup against `DATABASE_URL` |
-| Parse and upsert | `back/knowledge`, reusing the current split into sections and clauses |
+| Schema | Alembic revision `0001_knowledge`, SQLAlchemy models, applied on startup against `DATABASE_URL` |
+| Parse and upsert | `back/knowledge`, same split into sections and clauses |
 | MCP and HTTP | that service, port `8001` |
 | Proxy and model call | `back/chat` |
 | Files | `data/knowlage_files/` |

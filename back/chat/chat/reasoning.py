@@ -3,7 +3,7 @@
 import re
 from dataclasses import dataclass
 
-from chat.knowledge import MAX_CLARIFICATIONS, Clause, get_corpus
+from chat.knowledge import MAX_CLARIFICATIONS, Clause, prompt_context
 
 _KB_LINK = re.compile(r"\(/kb/([^)#\s]+)#(s-[^)\s]+)\)")
 
@@ -94,20 +94,20 @@ def read_dialogue(messages: list[dict[str, str]]) -> Dialogue:
 
 
 def render_turn(dialogue: Dialogue, clauses: list[Clause]) -> str:
-    corpus = get_corpus()
+    context = prompt_context()
     document_ids: list[str] = []
     for clause in clauses:
         if clause.document_id not in document_ids:
             document_ids.append(clause.document_id)
     lines = [
         "Глоссарий. Сокращение и полные формы ниже означают одно и то же.",
-        corpus.glossary.strip(),
+        context.glossary.strip(),
         "",
         "Термин глоссария цитируй ссылкой вида [РП](/kb/glossary#s-РП), подставив сокращение.",
         "",
         "Регламенты. Ссылка на документ целиком:",
     ]
-    lines.extend(f"- [{document.title}]({document.path})" for document in corpus.documents)
+    lines.extend(f"- [{document.title}]({document.path})" for document in context.regulations)
     lines.append("")
     lines.append("document_id: " + (", ".join(document_ids) if document_ids else "нет"))
     chosen = directorate_title(dialogue.directorate_id)
@@ -183,9 +183,8 @@ def document_links(clauses: list[Clause]) -> list[str]:
 
 def link_document_titles(reply: str) -> str:
     """Turn a bare or bold regulation title into a document link."""
-    corpus = get_corpus()
     catalog = sorted(
-        (*corpus.documents, corpus.glossary_document),
+        prompt_context().catalog,
         key=lambda document: len(document.title),
         reverse=True,
     )

@@ -7,7 +7,7 @@ from openai import OpenAI, OpenAIError
 from openai.types.chat import ChatCompletionMessageParam
 
 from chat.env import load_env
-from chat.knowledge import Clause, get_corpus, search_clauses
+from chat.knowledge import Clause, prompt_context, search_clauses
 from chat.reasoning import (
     Dialogue,
     allowed_sections,
@@ -85,13 +85,9 @@ def rewrite_query(question: str) -> str:
     text = question.strip()
     if not text:
         return ""
-    corpus = get_corpus()
-    headings = "\n".join(f"- {section.heading}" for section in corpus.sections)
-    aliases = "\n".join(
-        line.strip()
-        for line in corpus.glossary.splitlines()
-        if "=" in line and not line.strip().startswith("#")
-    )
+    context = prompt_context()
+    headings = "\n".join(f"- {heading}" for heading in context.headings)
+    aliases = context.aliases
     prompt = (
         "Перепиши вопрос сотрудника в одну строку поисковых слов из регламентов. "
         "Используй термины заголовков и сокращения глоссария. Без пояснений.\n\n"
