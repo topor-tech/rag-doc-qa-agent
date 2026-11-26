@@ -1,0 +1,12 @@
+[project]
+name = "chat"
+version = "0.1.0"
+description = "Chat backend for the document Q&A agent"
+requires-python = ">=3.14"
+dependencies = [
+    "openai>=3.60.0",
+]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
