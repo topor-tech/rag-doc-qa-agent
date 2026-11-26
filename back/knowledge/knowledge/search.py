@@ -1,10 +1,12 @@
-"""Rank clauses with the same BM25 the chat used, over rows loaded from Postgres."""
+"""Rank pymorphy3 lemmas with BM25. The body lemmas are stored on the clause."""
 
 import logging
 import math
 import re
+import threading
 from dataclasses import dataclass
 
+import pymorphy3
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,9 +15,9 @@ from knowledge.parse import CASE_SENSITIVE_ABBREVIATIONS
 
 logger = logging.getLogger(__name__)
 
-TOP_K = 8
-MIN_SCORE_RATIO = 0.4
-MAX_CONTEXT_CHARS = 18_000
+TOP_K = 36
+MIN_SCORE_RATIO = 0.2
+MAX_CONTEXT_CHARS = 48_000
 
 _STOPWORDS = frozenset(
     {
@@ -121,48 +123,6 @@ _STOPWORDS = frozenset(
         "with",
     }
 )
-_SUFFIXES = (
-    "иями",
-    "ями",
-    "ами",
-    "ого",
-    "ему",
-    "ому",
-    "ыми",
-    "ими",
-    "ою",
-    "ею",
-    "ая",
-    "яя",
-    "ое",
-    "ее",
-    "ые",
-    "ие",
-    "ую",
-    "юю",
-    "ой",
-    "ый",
-    "ий",
-    "ых",
-    "их",
-    "ов",
-    "ев",
-    "ах",
-    "ях",
-    "ом",
-    "ем",
-    "ам",
-    "ям",
-    "ей",
-    "а",
-    "я",
-    "ы",
-    "и",
-    "е",
-    "у",
-    "ю",
-    "о",
-)
 _TOKEN = re.compile(r"[A-Za-zА-ЯЁа-яё0-9]+(?:-[A-Za-zА-ЯЁа-яё0-9]+)*")
 _BM25_K1 = 1.5
 _BM25_B = 0.75
@@ -190,6 +150,7 @@ class _Row:
     document: str
     heading: str
     body: str
+    lemma_text: str | None
     document_id: str
     section_id: str
     anchor: str
@@ -250,6 +211,7 @@ def _load_clauses(session: Session, document_ids: list[str] | None) -> list[_Row
             Clause.clause_id,
             Clause.position,
             Clause.body_markdown,
+            Clause.lemma_text,
             Section.heading,
             Section.anchor,
             Document.title,
@@ -263,14 +225,24 @@ def _load_clauses(session: Session, document_ids: list[str] | None) -> list[_Row
     )
     if document_ids is not None:
         statement = statement.where(Clause.document_id.in_(document_ids))
-    rows = session.execute(statement).all()
     loaded: list[_Row] = []
-    for document_id, section_id, clause_id, position, body, heading, anchor, title in rows:
+    for (
+        document_id,
+        section_id,
+        clause_id,
+        position,
+        body,
+        lemmas,
+        heading,
+        anchor,
+        title,
+    ) in session.execute(statement).all():
         loaded.append(
             _Row(
                 document=title,
                 heading=heading,
                 body=body,
+                lemma_text=lemmas,
                 document_id=document_id,
                 section_id=section_id,
                 anchor=anchor,
@@ -279,6 +251,32 @@ def _load_clauses(session: Session, document_ids: list[str] | None) -> list[_Row
             )
         )
     return loaded
+
+
+def _bm25(query_terms: list[str], docs: tuple[tuple[str, ...], ...]) -> list[float]:
+    doc_count = len(docs)
+    df: dict[str, int] = {}
+    for doc in docs:
+        for term in set(doc):
+            df[term] = df.get(term, 0) + 1
+    avgdl = sum(len(doc) for doc in docs) / doc_count
+    scores: list[float] = []
+    unique_query = set(query_terms)
+    for doc in docs:
+        tf: dict[str, int] = {}
+        for term in doc:
+            tf[term] = tf.get(term, 0) + 1
+        doc_len = len(doc) or 1
+        score = 0.0
+        for term in unique_query:
+            freq = tf.get(term, 0)
+            if freq == 0:
+                continue
+            idf = math.log(1 + (doc_count - df[term] + 0.5) / (df[term] + 0.5))
+            denom = freq + _BM25_K1 * (1 - _BM25_B + _BM25_B * doc_len / avgdl)
+            score += idf * (freq * (_BM25_K1 + 1)) / denom
+        scores.append(score)
+    return scores
 
 
 def _hit(row: _Row, score: float) -> Hit:
@@ -330,8 +328,6 @@ def _with_neighbors(session: Session, selected: list[Hit]) -> list[Hit]:
             continue
         kept.append(hit)
         size += len(hit.body)
-        if len(kept) >= TOP_K:
-            break
     return kept
 
 
@@ -403,10 +399,45 @@ def _clause_terms(row: _Row) -> tuple[str, ...]:
     heading = [_index_term(token) for token in _TOKEN.findall(row.heading)]
     number = [_index_term(token) for token in _TOKEN.findall(row.clause_id)]
     document = [_index_term(token) for token in _TOKEN.findall(row.document)]
-    body = [_index_term(token) for token in _TOKEN.findall(row.body)]
+    body = _body_terms(row)
     return tuple(
         term for term in (*heading, *heading, *heading, *number, *number, *document, *body) if term
     )
+
+
+def _body_terms(row: _Row) -> list[str]:
+    if row.lemma_text is None:
+        return [term for term in (_index_term(token) for token in _TOKEN.findall(row.body)) if term]
+    return row.lemma_text.split()
+
+
+def lemmatize_text(text: str) -> str:
+    terms = (_index_term(token) for token in _TOKEN.findall(text))
+    return " ".join(term for term in terms if term)
+
+
+_morph: pymorphy3.MorphAnalyzer | None = None
+_morph_lock = threading.Lock()
+_lemmas: dict[str, str] = {}
+
+
+def _analyzer() -> pymorphy3.MorphAnalyzer:
+    global _morph
+    if _morph is not None:
+        return _morph
+    with _morph_lock:
+        if _morph is None:
+            _morph = pymorphy3.MorphAnalyzer()
+        return _morph
+
+
+def _lemma(folded: str) -> str:
+    cached = _lemmas.get(folded)
+    if cached is not None:
+        return cached
+    lemma = _analyzer().parse(folded)[0].normal_form
+    _lemmas[folded] = lemma
+    return lemma
 
 
 def _index_term(token: str) -> str | None:
@@ -420,10 +451,10 @@ def _index_term(token: str) -> str | None:
     if _is_abbreviation(token):
         return folded
     if any("а" <= char <= "я" or char == "ё" for char in folded):
-        stemmed = _stem(folded)
-        if len(stemmed) < 4 or stemmed in _STOPWORDS:
+        lemma = _lemma(folded)
+        if lemma in _STOPWORDS:
             return None
-        return stemmed
+        return lemma
     if len(folded) < 3:
         return None
     return folded
@@ -438,16 +469,6 @@ def _is_abbreviation(token: str) -> bool:
     return any(char.isupper() for char in letters[1:])
 
 
-def _stem(folded: str) -> str:
-    for suffix in _SUFFIXES:
-        if folded.endswith(suffix) and len(folded) - len(suffix) >= 4:
-            folded = folded[: -len(suffix)]
-            break
-    if len(folded) > 6:
-        return folded[:6]
-    return folded
-
-
 def _overlap_ok(query_terms: list[str], doc_terms: tuple[str, ...]) -> bool:
     unique = set(query_terms)
     if not unique:
@@ -456,29 +477,3 @@ def _overlap_ok(query_terms: list[str], doc_terms: tuple[str, ...]) -> bool:
     if len(unique) <= 2:
         return hits >= 1 and hits / len(unique) >= 0.5
     return hits >= 2 and hits / len(unique) >= 0.2
-
-
-def _bm25(query_terms: list[str], docs: tuple[tuple[str, ...], ...]) -> list[float]:
-    doc_count = len(docs)
-    df: dict[str, int] = {}
-    for doc in docs:
-        for term in set(doc):
-            df[term] = df.get(term, 0) + 1
-    avgdl = sum(len(doc) for doc in docs) / doc_count
-    scores: list[float] = []
-    unique_query = set(query_terms)
-    for doc in docs:
-        tf: dict[str, int] = {}
-        for term in doc:
-            tf[term] = tf.get(term, 0) + 1
-        doc_len = len(doc) or 1
-        score = 0.0
-        for term in unique_query:
-            freq = tf.get(term, 0)
-            if freq == 0:
-                continue
-            idf = math.log(1 + (doc_count - df[term] + 0.5) / (df[term] + 0.5))
-            denom = freq + _BM25_K1 * (1 - _BM25_B + _BM25_B * doc_len / avgdl)
-            score += idf * (freq * (_BM25_K1 + 1)) / denom
-        scores.append(score)
-    return scores

@@ -74,6 +74,7 @@ class Clause(Base):
     clause_id: Mapped[str] = mapped_column(Text, primary_key=True)
     position: Mapped[int] = mapped_column(Integer)
     body_markdown: Mapped[str] = mapped_column(Text)
+    lemma_text: Mapped[str | None] = mapped_column(Text)
     search_vector: Mapped[str] = mapped_column(TSVECTOR)
 
 

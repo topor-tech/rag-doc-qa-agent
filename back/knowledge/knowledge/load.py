@@ -5,19 +5,19 @@ import logging
 import os
 from pathlib import Path
 
-from sqlalchemy import delete, func, insert, literal_column
+from sqlalchemy import delete, func, insert, literal_column, select
 from sqlalchemy.orm import Session
 
 from knowledge.db import session_scope
 from knowledge.models import Clause, Document, GlossaryAlias, Section
 from knowledge.parse import GLOSSARY_NAME, ParsedDocument, parse_document
+from knowledge.search import lemmatize_text
 
 logger = logging.getLogger(__name__)
 
-_RUSSIAN = literal_column("'russian'")
+_SIMPLE = literal_column("'simple'")
 _WEIGHT_A = literal_column("'A'")
 _WEIGHT_B = literal_column("'B'")
-_WEIGHT_C = literal_column("'C'")
 
 
 def knowledge_dir() -> Path:
@@ -55,7 +55,11 @@ def _upsert(session: Session, path: Path) -> None:
     raw = path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     existing = session.get(Document, _document_id(path.name))
-    if existing is not None and existing.content_sha256 == digest:
+    if (
+        existing is not None
+        and existing.content_sha256 == digest
+        and not _lemmas_missing(session, existing.id)
+    ):
         logger.info("unchanged %s", path.name)
         return
     parsed = parse_document(raw.decode("utf-8"), path.name)
@@ -111,23 +115,32 @@ def _insert_clauses(session: Session, parsed: ParsedDocument) -> None:
                     clause_id=clause.clause_id,
                     position=clause.position,
                     body_markdown=clause.body,
-                    search_vector=_search_vector(
-                        section.heading, clause.clause_id, parsed.title, clause.body
-                    ),
+                    lemma_text=lemmatize_text(clause.body),
+                    search_vector=_search_vector(section.heading, clause.clause_id, parsed.title),
                 )
             )
 
 
-def _search_vector(heading: str, clause_id: str, title: str, body: str):
+def _search_vector(heading: str, clause_id: str, title: str):
+    """Heading, clause number, and title. The body is indexed from lemma_text."""
+
     def weighted(text: str, weight):
-        return func.setweight(func.to_tsvector(_RUSSIAN, text), weight)
+        return func.setweight(func.to_tsvector(_SIMPLE, text or " "), weight)
 
     return (
-        weighted(heading, _WEIGHT_A)
-        .op("||")(weighted(clause_id, _WEIGHT_A))
-        .op("||")(weighted(title, _WEIGHT_B))
-        .op("||")(weighted(body or " ", _WEIGHT_C))
+        weighted(lemmatize_text(heading), _WEIGHT_A)
+        .op("||")(weighted(lemmatize_text(clause_id), _WEIGHT_A))
+        .op("||")(weighted(lemmatize_text(title), _WEIGHT_B))
     )
+
+
+def _lemmas_missing(session: Session, document_id: str) -> bool:
+    missing = session.scalar(
+        select(func.count())
+        .select_from(Clause)
+        .where(Clause.document_id == document_id, Clause.lemma_text.is_(None))
+    )
+    return bool(missing)
 
 
 def _document_id(source_name: str) -> str:
