@@ -19,7 +19,7 @@ jobs:
       - name: Build and start
         env:
           REG_CLOUD_CHAT_API_KEY: ${{ secrets.REG_CLOUD_CHAT_API_KEY }}
-        run: docker compose up -d --build --remove-orphans
+        run: docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
 
       - name: Remove unused build cache
         run: docker builder prune -af
