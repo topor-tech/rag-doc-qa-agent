@@ -2,7 +2,7 @@
 
 `back/chat/chat` keeps the regulations in one process-wide `Corpus`. `load_knowledge` reads `data/knowlage_files` at startup, and every search walks that object. Sessions stay in memory too; this slice does not move them.
 
-The catalog moves into the Postgres 17 database already defined in `docker-compose.local.yml` (`rag` on port 5432). A separate knowledge service owns ingest and search. Chat asks that service over MCP and stops holding the files.
+The catalog moves into the Postgres 18 database already defined in `docker-compose.local.yml` (`rag` on port 5432). A separate knowledge service owns ingest and search. Chat asks that service over MCP and stops holding the files.
 
 ## Shape
 
@@ -152,7 +152,7 @@ The preselected-context path in `llm.py` uses the same search call as the MCP to
 
 ## Out of this slice
 
-- Chat sessions, dialogue state, and the clarification counter. They stay in the chat process.
+- Chat sessions. Dialogues are stored in schema `chat` (`006_chat_sessions_in_db.md`). The clarification counter is still derived from the transcript on each turn.
 - Expert answers. When they arrive they get their own table, with a link to the question and the `document_id`s they apply to. They are not rows in `clauses`. A regulation and a confirmed clarification must stay distinguishable.
 - Embeddings. A later slice can add a vector column on `clauses` and a second rank step. It does not need a new database.
 - Uploads, Confluence, and accounts. The folder remains the source.

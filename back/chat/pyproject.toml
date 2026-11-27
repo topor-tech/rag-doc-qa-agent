@@ -8,10 +8,13 @@ version = "0.1.0"
 description = "Chat backend for the document Q&A agent"
 requires-python = ">=3.14"
 dependencies = [
+    "alembic>=1.16",
     "fastapi>=0.165.0",
     "httpx>=0.28",
     "mcp>=2.3.0",
     "openai>=3.60.0",
+    "psycopg[binary]>=3.2",
+    "sqlalchemy>=2.0",
     "uvicorn>=0.32",
 ]
 

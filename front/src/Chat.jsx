@@ -57,35 +57,102 @@ function MessageBody({ content, onOpenPath }) {
   )
 }
 
-function Chat({ onOpenPath }) {
+function Chat({ onOpenPath, onNavigate, sessionId }) {
+  const [sessions, setSessions] = useState([])
   const [messages, setMessages] = useState([])
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [writable, setWritable] = useState(true)
   const [error, setError] = useState('')
-  const sessionIdRef = useRef(null)
   const turnRef = useRef(0)
   const bottomRef = useRef(null)
+  const sessionIdRef = useRef(sessionId)
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' })
   }, [messages, pending, error])
 
-  async function openSession() {
-    if (sessionIdRef.current) return sessionIdRef.current
+  useEffect(() => {
+    let cancelled = false
+    const requestedId = sessionId
 
-    const response = await fetch('/api/sessions', { method: 'POST' })
-    if (!response.ok) throw new Error('Не удалось открыть сессию')
+    async function load() {
+      setMessages([])
+      setWritable(true)
+      setError('')
+      setDraft('')
 
-    const data = await response.json()
-    sessionIdRef.current = data.id
-    return data.id
+      const listResponse = await fetch('/api/sessions')
+      if (cancelled) return
+      if (!listResponse.ok) {
+        setError('Не удалось открыть список диалогов')
+        return
+      }
+      const list = await listResponse.json()
+      if (cancelled) return
+      setSessions(Array.isArray(list.sessions) ? list.sessions : [])
+
+      if (!requestedId) return
+
+      const response = await fetch(`/api/sessions/${requestedId}`)
+      if (cancelled) return
+      if (response.status === 404) {
+        onNavigate('/')
+        return
+      }
+      if (!response.ok) {
+        setError('Не удалось открыть диалог')
+        return
+      }
+      const data = await response.json()
+      if (cancelled) return
+      setMessages(Array.isArray(data.messages) ? data.messages : [])
+      setWritable(data.writable !== false)
+    }
+
+    load().catch(() => {
+      if (!cancelled) setError('Не удалось открыть диалог')
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, onNavigate])
+
+  async function refreshSessions() {
+    const response = await fetch('/api/sessions')
+    if (!response.ok) return
+    const list = await response.json()
+    setSessions(Array.isArray(list.sessions) ? list.sessions : [])
+  }
+
+  async function startNewDialog() {
+    if (creating || pending) return
+    setCreating(true)
+    setError('')
+    try {
+      const response = await fetch('/api/sessions', { method: 'POST' })
+      if (!response.ok) throw new Error('Не удалось открыть сессию')
+      const data = await response.json()
+      await refreshSessions()
+      onNavigate(`/c/${data.id}`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Не удалось открыть сессию')
+    } finally {
+      setCreating(false)
+    }
   }
 
   async function sendMessage() {
     const text = draft.trim()
-    if (!text || pending) return
+    if (!text || pending || !sessionId || !writable) return
 
     const turn = turnRef.current
+    const requestedId = sessionId
     setDraft('')
     setError('')
     setPending(true)
@@ -95,12 +162,12 @@ function Chat({ onOpenPath }) {
     ])
 
     try {
-      const sessionId = await openSession()
-      const response = await fetch(`/api/sessions/${sessionId}/messages`, {
+      const response = await fetch(`/api/sessions/${requestedId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: text }),
       })
+      if (sessionIdRef.current !== requestedId || turnRef.current !== turn) return
       if (!response.ok) {
         let detail = 'Не удалось получить ответ агента'
         try {
@@ -113,31 +180,26 @@ function Chat({ onOpenPath }) {
       }
 
       const data = await response.json()
-      const reply = data.messages.at(-1)
-      if (!reply || reply.role !== 'assistant') {
-        throw new Error('Не удалось получить ответ агента')
-      }
-      if (turnRef.current !== turn) return
-
-      setMessages((current) => [
-        ...current,
-        { id: crypto.randomUUID(), role: 'assistant', content: reply.content },
-      ])
+      if (sessionIdRef.current !== requestedId || turnRef.current !== turn) return
+      setMessages(Array.isArray(data.messages) ? data.messages : [])
+      setWritable(data.writable !== false)
+      await refreshSessions()
     } catch (cause) {
-      if (turnRef.current !== turn) return
+      if (sessionIdRef.current !== requestedId || turnRef.current !== turn) return
       setError(cause instanceof Error ? cause.message : 'Не удалось получить ответ агента')
+      try {
+        const again = await fetch(`/api/sessions/${requestedId}`)
+        if (again.ok && sessionIdRef.current === requestedId) {
+          const data = await again.json()
+          setMessages(Array.isArray(data.messages) ? data.messages : [])
+          setWritable(data.writable !== false)
+        }
+      } catch {
+        // The banner already explains the failure.
+      }
     } finally {
       if (turnRef.current === turn) setPending(false)
     }
-  }
-
-  function startNewDialog() {
-    turnRef.current += 1
-    sessionIdRef.current = null
-    setMessages([])
-    setDraft('')
-    setError('')
-    setPending(false)
   }
 
   function onSubmit(event) {
@@ -152,70 +214,123 @@ function Chat({ onOpenPath }) {
     }
   }
 
+  const openTitle = sessions.find((item) => item.id === sessionId)?.title
+
   return (
-    <div className="chat">
-      <header className="chat-header">
-        <div>
-          <p className="eyebrow">Сессия</p>
-          <h1>Чат с агентом</h1>
-        </div>
+    <div className="chat-screen">
+      <aside className="session-list" aria-label="Ваши диалоги">
         <button
           type="button"
           className="ghost"
           onClick={startNewDialog}
-          disabled={messages.length === 0 && !error}
+          disabled={creating || pending}
         >
           Новый диалог
         </button>
-      </header>
-
-      <main className="messages" aria-live="polite">
-        {messages.length === 0 ? (
-          <p className="empty">Задайте вопрос по регламенту.</p>
+        {sessions.length === 0 ? (
+          <p className="session-empty">Пока нет диалогов.</p>
         ) : (
-          messages.map((message) => (
-            <article key={message.id} className={`bubble ${message.role}`}>
-              <span className="role">{message.role === 'user' ? 'Вы' : 'Агент'}</span>
-              {message.role === 'assistant' ? (
-                <MessageBody content={message.content} onOpenPath={onOpenPath} />
-              ) : (
-                <p>{message.content}</p>
-              )}
+          <ul>
+            {sessions.map((session) => (
+              <li key={session.id}>
+                <a
+                  className={session.id === sessionId ? 'session-link active' : 'session-link'}
+                  href={`/c/${session.id}`}
+                  aria-current={session.id === sessionId ? 'page' : undefined}
+                  onClick={(event) => {
+                    if (
+                      event.metaKey ||
+                      event.ctrlKey ||
+                      event.shiftKey ||
+                      event.altKey ||
+                      event.button !== 0
+                    ) {
+                      return
+                    }
+                    event.preventDefault()
+                    onNavigate(`/c/${session.id}`)
+                  }}
+                >
+                  {session.title || 'Новый диалог'}
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </aside>
+
+      <div className="chat">
+        <header className="chat-header">
+          <div>
+            <p className="eyebrow">Сессия</p>
+            <h1>{sessionId ? openTitle || 'Новый диалог' : 'Чат с агентом'}</h1>
+          </div>
+          <button
+            type="button"
+            className="ghost"
+            onClick={startNewDialog}
+            disabled={creating || pending}
+          >
+            Новый диалог
+          </button>
+        </header>
+
+        <main className="messages" aria-live="polite">
+          {!sessionId ? (
+            <p className="empty">Выберите диалог или начните новый.</p>
+          ) : messages.length === 0 ? (
+            <p className="empty">Задайте вопрос по регламенту.</p>
+          ) : (
+            messages.map((message) => (
+              <article key={message.id} className={`bubble ${message.role}`}>
+                <span className="role">{message.role === 'user' ? 'Вы' : 'Агент'}</span>
+                {message.role === 'assistant' ? (
+                  <MessageBody content={message.content} onOpenPath={onOpenPath} />
+                ) : (
+                  <p>{message.content}</p>
+                )}
+              </article>
+            ))
+          )}
+          {pending && (
+            <article className="bubble assistant">
+              <span className="role">Агент</span>
+              <p>Печатает…</p>
             </article>
-          ))
-        )}
-        {pending && (
-          <article className="bubble assistant">
-            <span className="role">Агент</span>
-            <p>Печатает…</p>
-          </article>
-        )}
-        <div ref={bottomRef} />
-      </main>
+          )}
+          <div ref={bottomRef} />
+        </main>
 
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
 
-      <form className="composer" onSubmit={onSubmit}>
-        <label className="sr-only" htmlFor="draft">
-          Сообщение
-        </label>
-        <textarea
-          id="draft"
-          rows={2}
-          value={draft}
-          placeholder="Спросите про регламент"
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={onKeyDown}
-          disabled={pending}
-        />
-        <button type="submit" disabled={!draft.trim() || pending}>
-          Отправить
-        </button>
-      </form>
+        {sessionId && !writable ? (
+          <p className="notice">Этот диалог только для чтения.</p>
+        ) : null}
+
+        {sessionId && writable ? (
+          <form className="composer" onSubmit={onSubmit}>
+            <label className="sr-only" htmlFor="draft">
+              Сообщение
+            </label>
+            <textarea
+              id="draft"
+              rows={2}
+              value={draft}
+              placeholder="Спросите про регламент"
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={onKeyDown}
+              disabled={pending}
+            />
+            <button type="submit" disabled={!draft.trim() || pending}>
+              Отправить
+            </button>
+          </form>
+        ) : null}
+      </div>
     </div>
   )
 }

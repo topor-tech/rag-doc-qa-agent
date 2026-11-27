@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Chat from './Chat.jsx'
 import Documents from './Documents.jsx'
 import './App.css'
@@ -20,10 +20,20 @@ function decodeHash(hash) {
 }
 
 function parseRoute(pathname) {
-  if (pathname === '/kb') return { name: 'documents', documentId: null }
-  const match = pathname.match(/^\/kb\/([^/]+)\/?$/)
-  if (match) return { name: 'documents', documentId: decodeURIComponent(match[1]) }
-  return { name: 'chat', documentId: null }
+  if (pathname === '/kb') return { name: 'documents', documentId: null, sessionId: null }
+  const documentMatch = pathname.match(/^\/kb\/([^/]+)\/?$/)
+  if (documentMatch) {
+    return {
+      name: 'documents',
+      documentId: decodeURIComponent(documentMatch[1]),
+      sessionId: null,
+    }
+  }
+  const chatMatch = pathname.match(/^\/c\/([^/]+)\/?$/)
+  if (chatMatch) {
+    return { name: 'chat', documentId: null, sessionId: decodeURIComponent(chatMatch[1]) }
+  }
+  return { name: 'chat', documentId: null, sessionId: null }
 }
 
 function NavLink({ href, current, onNavigate, children }) {
@@ -56,13 +66,13 @@ function App() {
     }
   }, [])
 
-  function navigate(to) {
+  const navigate = useCallback((to) => {
     const url = new URL(to, window.location.origin)
     const next = `${url.pathname}${url.search}${url.hash}`
     const current = `${window.location.pathname}${window.location.search}${window.location.hash}`
     if (next !== current) window.history.pushState({}, '', next)
     setLocation(readLocation())
-  }
+  }, [])
 
   const route = parseRoute(location.pathname)
 
@@ -77,7 +87,7 @@ function App() {
         </NavLink>
       </nav>
       <div className={route.name === 'chat' ? 'view' : 'view hidden'}>
-        <Chat onOpenPath={navigate} />
+        <Chat onOpenPath={navigate} onNavigate={navigate} sessionId={route.sessionId} />
       </div>
       {route.name === 'documents' && (
         <Documents documentId={route.documentId} anchor={location.anchor} onNavigate={navigate} />

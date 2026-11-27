@@ -43,15 +43,68 @@
   display: none;
 }
 
+.chat-screen {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+}
+
+.session-list {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 12px;
+  width: 280px;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+  background: #fff;
+  border-right: 1px solid #e4e7eb;
+}
+
+.session-list ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-link {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #1f2937;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.session-link.active {
+  color: #1f7a4d;
+  background: #e7f0ea;
+}
+
+.session-link:focus-visible {
+  outline: 2px solid #1f7a4d;
+  outline-offset: 2px;
+}
+
+.session-empty {
+  margin: 0;
+  color: #6b7280;
+}
+
 .chat {
   display: flex;
   flex: 1;
   flex-direction: column;
-  width: min(760px, 100%);
+  width: auto;
   min-height: 0;
-  margin: 0 auto;
+  margin: 0;
   background: #fff;
-  border-inline: 1px solid #e4e7eb;
+  border-inline: 0;
 }
 
 .chat-header {
@@ -150,6 +203,13 @@ h1 {
 
 .role {
   font-size: 12px;
+  color: #6b7280;
+}
+
+.notice {
+  margin: 0;
+  padding: 16px 24px 20px;
+  border-top: 1px solid #e4e7eb;
   color: #6b7280;
 }
 
@@ -284,6 +344,19 @@ h1 {
   .section-column,
   .reader {
     overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid #e4e7eb;
+  }
+}
+
+@media (max-width: 800px) {
+  .chat-screen {
+    flex-direction: column;
+  }
+
+  .session-list {
+    width: auto;
+    max-height: 180px;
     border-right: 0;
     border-bottom: 1px solid #e4e7eb;
   }

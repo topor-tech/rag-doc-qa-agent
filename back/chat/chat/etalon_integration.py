@@ -136,9 +136,11 @@ def check_scenario(base_url: str, scenario: Scenario) -> Row:
 
 
 def ask(base_url: str, question: str) -> str:
-    created = post_json(f"{base_url}/sessions", None)
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
+    created = post_json(opener, f"{base_url}/sessions", None)
     session_id = _text(created, "id")
     payload = post_json(
+        opener,
         f"{base_url}/sessions/{session_id}/messages",
         {"content": question},
     )
@@ -251,7 +253,11 @@ def serve(base_url: str) -> Iterator[str]:
             log_path.unlink(missing_ok=True)
 
 
-def post_json(url: str, payload: dict[str, object] | None) -> dict[str, object]:
+def post_json(
+    opener: urllib.request.OpenerDirector,
+    url: str,
+    payload: dict[str, object] | None,
+) -> dict[str, object]:
     body = b"{}" if payload is None else json.dumps(payload, ensure_ascii=False).encode()
     last_error: Exception | None = None
     for attempt in range(3):
@@ -262,7 +268,7 @@ def post_json(url: str, payload: dict[str, object] | None) -> dict[str, object]:
             headers={"Content-Type": "application/json; charset=utf-8"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=API_TIMEOUT_SECONDS) as response:
+            with opener.open(request, timeout=API_TIMEOUT_SECONDS) as response:
                 return _object(json.loads(response.read().decode()))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]

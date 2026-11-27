@@ -1,7 +1,9 @@
 import logging
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from openai import OpenAI, OpenAIError
 from openai.types.chat import ChatCompletionMessageParam
@@ -9,7 +11,6 @@ from openai.types.chat import ChatCompletionMessageParam
 from chat.env import load_env
 from chat.knowledge import Clause, prompt_context, search_clauses
 from chat.reasoning import (
-    Dialogue,
     allowed_sections,
     bad_links,
     cited_document_ids,
@@ -51,11 +52,69 @@ EMPTY_REPLY = (
 _client: OpenAI | None = None
 
 
+FORMAT_VERSION = 1
+
+
+@dataclass(frozen=True)
+class HitDebug:
+    document_id: str
+    section_id: str
+    clause_id: str
+    score: float
+
+
+@dataclass
+class TurnDebug:
+    search_text: str = ""
+    rewritten_query: str | None = None
+    directorate_id: str | None = None
+    clarification_count: int = 0
+    retried: bool = False
+    dropped_links: tuple[str, ...] = ()
+    draft_reply: str | None = None
+    hits: tuple[HitDebug, ...] = ()
+
+
+_current_debug: ContextVar[TurnDebug | None] = ContextVar("turn_debug", default=None)
+
+
 @dataclass(frozen=True)
 class TurnResult:
     reply: str
     allowed: frozenset[tuple[str, str]]
     clause_ids: frozenset[str]
+    debug: TurnDebug
+
+
+def current_turn_debug() -> TurnDebug:
+    debug = _current_debug.get()
+    if debug is None:
+        return TurnDebug()
+    return debug
+
+
+def turn_payload(debug: TurnDebug, error: str | None) -> dict[str, Any]:
+    return {
+        "model": MODEL,
+        "temperature": TEMPERATURE,
+        "search_text": debug.search_text,
+        "rewritten_query": debug.rewritten_query,
+        "directorate_id": debug.directorate_id,
+        "clarification_count": debug.clarification_count,
+        "retried": debug.retried,
+        "dropped_links": list(debug.dropped_links),
+        "draft_reply": debug.draft_reply,
+        "error": error,
+        "hits": [
+            {
+                "document_id": hit.document_id,
+                "section_id": hit.section_id,
+                "clause_id": hit.clause_id,
+                "score": hit.score,
+            }
+            for hit in debug.hits
+        ],
+    }
 
 
 def get_client() -> OpenAI:
@@ -122,10 +181,26 @@ def complete(messages: list[dict[str, str]]) -> str:
 
 
 def answer_turn(messages: list[dict[str, str]]) -> TurnResult:
+    debug = TurnDebug()
+    _current_debug.set(debug)
     dialogue = read_dialogue(messages)
-    question = _search_question(dialogue)
+    debug.search_text = dialogue.search_text()
+    debug.directorate_id = dialogue.directorate_id
+    debug.clarification_count = dialogue.clarification_count
+    rewritten = rewrite_query(debug.search_text)
+    debug.rewritten_query = rewritten or None
+    question = debug.search_text if not rewritten else f"{debug.search_text}\n{rewritten}"
     found = search_clauses(question, document_ids=dialogue.document_ids())
     clauses = [clause for clause, _score in found]
+    debug.hits = tuple(
+        HitDebug(
+            document_id=clause.document_id,
+            section_id=clause.section_id,
+            clause_id=clause.clause_id,
+            score=score,
+        )
+        for clause, score in found
+    )
     logger.info(
         "knowledge context for %r: %s",
         dialogue.latest[:180],
@@ -135,25 +210,31 @@ def answer_turn(messages: list[dict[str, str]]) -> TurnResult:
     reply = _generate(system, messages)
     allowed = allowed_sections(clauses)
     if reply and _needs_retry(reply, clauses, allowed):
-        retried = _generate(f"{system}\n\n{_retry_note(reply, clauses, allowed)}", messages)
-        if retried:
-            reply = retried
+        debug.retried = True
+        second = _generate(f"{system}\n\n{_retry_note(reply, clauses, allowed)}", messages)
+        if second:
+            reply = second
+    dropped = _dropped_links(reply, allowed)
     cleaned = link_document_titles(drop_bad_links(reply, allowed))
     if not cleaned:
         cleaned = EMPTY_REPLY
+    debug.dropped_links = tuple(dropped)
+    debug.draft_reply = reply if reply and reply != cleaned else None
     return TurnResult(
         reply=cleaned,
         allowed=frozenset(allowed),
         clause_ids=frozenset(clause.clause_id for clause in clauses),
+        debug=debug,
     )
 
 
-def _search_question(dialogue: Dialogue) -> str:
-    base = dialogue.search_text()
-    rewritten = rewrite_query(base)
-    if not rewritten:
-        return base
-    return f"{base}\n{rewritten}"
+def _dropped_links(reply: str, allowed: set[tuple[str, str]]) -> list[str]:
+    found: list[str] = []
+    for raw in bad_links(reply, allowed):
+        path = raw[1:-1] if raw.startswith("(") and raw.endswith(")") else raw
+        if path not in found:
+            found.append(path)
+    return found
 
 
 def _generate(system: str, messages: list[dict[str, str]]) -> str:
