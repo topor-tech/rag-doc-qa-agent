@@ -159,7 +159,7 @@ def rewrite_query(question: str) -> str:
     try:
         response = get_client().chat.completions.create(
             model=MODEL,
-            max_tokens=900,
+            max_tokens=1800,
             temperature=0,
             messages=[{"role": "user", "content": prompt}],
         )
