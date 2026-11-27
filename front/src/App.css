@@ -47,7 +47,6 @@
   display: flex;
   flex: 1;
   min-height: 0;
-  background: #fff;
 }
 
 .session-list {
@@ -98,13 +97,13 @@
 
 .chat {
   display: flex;
-  flex: 1;
+  flex: 0 1 760px;
   flex-direction: column;
-  width: auto;
+  width: min(760px, 100%);
+  max-width: 760px;
   min-height: 0;
-  margin: 0;
   background: #fff;
-  border-inline: 0;
+  border-inline: 1px solid #e4e7eb;
 }
 
 .chat-header {
@@ -359,6 +358,13 @@ h1 {
     max-height: 180px;
     border-right: 0;
     border-bottom: 1px solid #e4e7eb;
+  }
+
+  .chat {
+    flex: 1;
+    width: 100%;
+    max-width: none;
+    border-inline: 0;
   }
 }
 
