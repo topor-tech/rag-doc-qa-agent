@@ -121,9 +121,9 @@ def get_client() -> OpenAI:
     global _client
     if _client is None:
         load_env(Path(__file__).resolve().parents[1] / "secrets" / "env")
-        api_key = os.environ.get("API_KEY")
+        api_key = os.environ.get("REG_CLOUD_CHAT_API_KEY")
         if not api_key:
-            raise RuntimeError("API_KEY is not set")
+            raise RuntimeError("REG_CLOUD_CHAT_API_KEY is not set")
         _client = OpenAI(api_key=api_key, base_url=BASE_URL)
     return _client
 

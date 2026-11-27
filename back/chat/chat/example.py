@@ -16,7 +16,7 @@ def load_env(path: Path) -> None:
 
 
 load_env(Path(__file__).resolve().parents[1] / "secrets" / "env")
-api_key = os.environ["API_KEY"]
+api_key = os.environ["REG_CLOUD_CHAT_API_KEY"]
 url = "https://ai.reg.cloud/v1"
 client = OpenAI(api_key=api_key, base_url=url)
 response = client.chat.completions.create(

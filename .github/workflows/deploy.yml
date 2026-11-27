@@ -1,0 +1,22 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and start
+        env:
+          REG_CLOUD_CHAT_API_KEY: ${{ secrets.REG_CLOUD_CHAT_API_KEY }}
+        run: docker compose up -d --build --remove-orphans
